@@ -16,6 +16,9 @@ ERROR_SUCCESS = 0x00000000
 wlan_notification_acm_connection_complete = 16
 wlan_notification_acm_disconnected = 5
 
+wlan_intf_opcode_current_connection = 7
+wlan_interface_state_connected = 1
+
 DOT11_SSID_MAX_LENGTH = 32
 
 # ── ctypes structures ────────────────────────────────────────────
@@ -52,6 +55,59 @@ class WLAN_NOTIFICATION_DATA(Structure):
 
 PWLAN_NOTIFICATION_DATA = POINTER(WLAN_NOTIFICATION_DATA)
 
+
+class GUID(Structure):
+    _fields_ = [
+        ("Data1", wintypes.DWORD),
+        ("Data2", wintypes.WORD),
+        ("Data3", wintypes.WORD),
+        ("Data4", wintypes.BYTE * 8),
+    ]
+
+
+class WLAN_INTERFACE_INFO(Structure):
+    _fields_ = [
+        ("InterfaceGuid", GUID),
+        ("strInterfaceDescription", wintypes.WCHAR * 256),
+        ("isState", wintypes.DWORD),
+    ]
+
+
+class WLAN_INTERFACE_INFO_LIST(Structure):
+    _fields_ = [
+        ("dwNumberOfItems", wintypes.DWORD),
+        ("dwIndex", wintypes.DWORD),
+        ("InterfaceInfo", WLAN_INTERFACE_INFO * 1),
+    ]
+
+
+PWLAN_INTERFACE_INFO_LIST = POINTER(WLAN_INTERFACE_INFO_LIST)
+
+
+class WLAN_ASSOCIATION_ATTRIBUTES(Structure):
+    _fields_ = [
+        ("dot11Ssid", DOT11_SSID),
+        ("dot11BssType", wintypes.DWORD),
+        ("dot11Bssid", wintypes.BYTE * 6),
+        ("dot11PhyType", wintypes.DWORD),
+        ("uDot11PhyIndex", wintypes.ULONG),
+        ("wlanSignalQuality", wintypes.ULONG),
+        ("bInReset", wintypes.BOOL),
+    ]
+
+
+class WLAN_CONNECTION_ATTRIBUTES(Structure):
+    _fields_ = [
+        ("isState", wintypes.DWORD),
+        ("wlanConnectionMode", wintypes.DWORD),
+        ("strProfileName", wintypes.WCHAR * 256),
+        ("wlanAssociationAttributes", WLAN_ASSOCIATION_ATTRIBUTES),
+    ]
+
+
+PWLAN_CONNECTION_ATTRIBUTES = POINTER(WLAN_CONNECTION_ATTRIBUTES)
+
+
 # ── callback type ────────────────────────────────────────────────
 
 WLAN_NOTIFICATION_CALLBACK = CFUNCTYPE(None, PWLAN_NOTIFICATION_DATA, wintypes.LPVOID)
@@ -87,6 +143,93 @@ _WlanCloseHandle.argtypes = [
     wintypes.LPVOID,      # pReserved
 ]
 _WlanCloseHandle.restype = wintypes.DWORD
+
+_WlanEnumInterfaces = _wlanapi.WlanEnumInterfaces
+_WlanEnumInterfaces.argtypes = [
+    wintypes.LPVOID,      # hClientHandle
+    wintypes.LPVOID,      # pReserved
+    POINTER(PWLAN_INTERFACE_INFO_LIST),  # ppInterfaceList
+]
+_WlanEnumInterfaces.restype = wintypes.DWORD
+
+_WlanQueryInterface = _wlanapi.WlanQueryInterface
+_WlanQueryInterface.argtypes = [
+    wintypes.LPVOID,      # hClientHandle
+    POINTER(GUID),        # pInterfaceGuid
+    wintypes.DWORD,       # OpCode
+    wintypes.LPVOID,      # pReserved (must be NULL)
+    POINTER(wintypes.DWORD),  # pdwDataSize
+    POINTER(wintypes.LPVOID), # ppData
+    POINTER(wintypes.LPVOID), # pOpCodeOwner (must be NULL)
+]
+_WlanQueryInterface.restype = wintypes.DWORD
+
+_WlanFreeMemory = _wlanapi.WlanFreeMemory
+_WlanFreeMemory.argtypes = [
+    wintypes.LPVOID,      # pMemory
+]
+_WlanFreeMemory.restype = wintypes.DWORD
+
+
+def query_current_ssid() -> Optional[str]:
+    """Query the SSID of the currently connected WiFi interface via WlanAPI.
+
+    Locale-independent replacement for netsh-based SSID queries.
+    Returns None if not connected or on error.
+    """
+    version = wintypes.DWORD()
+    handle = wintypes.LPVOID()
+
+    ret = _WlanOpenHandle(2, None, byref(version), byref(handle))
+    if ret != ERROR_SUCCESS:
+        logger.warning("WlanOpenHandle failed: {ret}", ret=ret)
+        return None
+
+    try:
+        iface_list = PWLAN_INTERFACE_INFO_LIST()
+        ret = _WlanEnumInterfaces(handle, None, byref(iface_list))
+        if ret != ERROR_SUCCESS:
+            logger.warning("WlanEnumInterfaces failed: {ret}", ret=ret)
+            return None
+
+        count = iface_list.contents.dwNumberOfItems
+        info_array = cast(
+            byref(iface_list.contents.InterfaceInfo),
+            POINTER(WLAN_INTERFACE_INFO),
+        )
+
+        for i in range(count):
+            info = info_array[i]
+            if info.isState == wlan_interface_state_connected:
+                guid = info.InterfaceGuid
+                buf_size = wintypes.DWORD()
+                buf_ptr = wintypes.LPVOID()
+                ret = _WlanQueryInterface(
+                    handle,
+                    byref(guid),
+                    wlan_intf_opcode_current_connection,
+                    None,
+                    byref(buf_size),
+                    byref(buf_ptr),
+                    None,
+                )
+                if ret != ERROR_SUCCESS:
+                    continue
+
+                try:
+                    conn_attrs = cast(buf_ptr, PWLAN_CONNECTION_ATTRIBUTES).contents
+                    ssid_len = conn_attrs.wlanAssociationAttributes.dot11Ssid.uSSIDLength
+                    if 0 < ssid_len <= DOT11_SSID_MAX_LENGTH:
+                        ssid_bytes = bytes(
+                            conn_attrs.wlanAssociationAttributes.dot11Ssid.ucSSID[:ssid_len]
+                        )
+                        return ssid_bytes.decode("utf-8", errors="replace")
+                finally:
+                    _WlanFreeMemory(buf_ptr)
+    finally:
+        _WlanCloseHandle(handle, None)
+
+    return None
 
 
 class ConnectionMonitor:
@@ -170,8 +313,8 @@ class ConnectionMonitor:
     def set_initial_ssid(self, ssid: Optional[str]) -> None:
         """Set the initial SSID without triggering callbacks.
 
-        Called once after start() to bootstrap state from a netsh query
-        so that subsequent events from the queue do not re-trigger.
+        Called once after start() to bootstrap state so that subsequent
+        events from the queue do not re-trigger.
         """
         self._current_ssid = ssid
 

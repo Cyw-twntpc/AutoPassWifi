@@ -59,9 +59,9 @@ class TrayApp:
             chrome_dir = app_dir / "chromium-1228"
             if not chrome_dir.is_dir():
                 _show_warning(
-                    "Chromium 瀏覽器未找到",
-                    "無法找到 Chromium 瀏覽器，請重新安裝程式。\n\n"
-                    f"預期位置：{chrome_dir}",
+                    "Chromium Browser Not Found",
+                    "Chromium browser not found. Please reinstall.\n\n"
+                    f"Expected location: {chrome_dir}",
                 )
 
         # Load or generate icons.
@@ -70,10 +70,10 @@ class TrayApp:
 
         # Build pystray menu.
         self._menu = pystray.Menu(
-            pystray.MenuItem("啟用", self._on_start, enabled=lambda: not self._running),
-            pystray.MenuItem("暫停", self._on_stop, enabled=lambda: self._running),
+            pystray.MenuItem("Enable", self._on_start, enabled=lambda: not self._running),
+            pystray.MenuItem("Pause", self._on_stop, enabled=lambda: self._running),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("離開", self._on_exit),
+            pystray.MenuItem("Quit", self._on_exit),
         )
 
         # Ensure autostart is registered (installer typically does this).

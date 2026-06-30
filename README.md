@@ -28,9 +28,9 @@ All data files (`portal_profiles.json`, `session_history.json`, `logs/`) are rem
 ## Usage
 
 - **System tray icon** — right-click to see the menu
-  - **啟用** — resume monitoring after a pause
-  - **暫停** — stop monitoring temporarily
-  - **離開** — quit the application
+  - **Enable** — resume monitoring after a pause
+  - **Pause** — stop monitoring temporarily
+  - **Quit** — exit the application
 - When connected to a known SSID, AutoPassWiFi automatically detects the captive portal and submits the agreement form
 - For an unknown SSID with a portal, a Chromium window opens for one-time interactive recording — the result is saved and replayed automatically on subsequent connections
 

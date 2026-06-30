@@ -13,7 +13,7 @@ from src.core.portal_detector import detect_captive_portal
 from src.providers.clickthrough import ClickthroughProvider
 from src.providers.registry import ProviderRegistry
 from src.utils.config import AppConfig
-from src.utils.netsh_helper import get_current_ssid
+from src.core.connection_monitor import query_current_ssid as get_current_ssid
 from src.utils.portal_profile_store import PortalProfileStore
 from src.utils.session_tracker import SessionTracker
 
