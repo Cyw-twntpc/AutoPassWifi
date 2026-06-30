@@ -1,0 +1,12 @@
+[project]
+name = "autopasswifi"
+version = "0.1.0"
+description = "Background tray application that auto-authenticates public WiFi captive portals (iTaiwan, TPE-Free, New Taipei)"
+requires-python = ">=3.10"
+dependencies = [
+    "playwright>=1.50.0",
+    "httpx>=0.28.0",
+    "loguru>=0.7.0",
+    "pystray>=0.19.0",
+    "Pillow>=10.0.0",
+]
