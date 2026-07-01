@@ -89,29 +89,6 @@ The running application is terminated automatically before uninstall. All applic
 - **PyInstaller** — single-file `--onefile --noconsole` packaging
 - **Inno Setup** — installer that bundles Chromium alongside the executable
 
-## Build from Source
-
-```powershell
-# Create virtual environment
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-
-# Install dependencies
-pip install -r requirements.txt
-pip install -r dev-requirements.txt
-
-# Install Playwright browsers
-playwright install chromium
-
-# Run tests
-pytest tests/
-
-# Build executable
-python scripts/build_exe.py
-```
-
-The output is `dist/AutoPassWiFi.exe`. For distribution, build the installer via Inno Setup using `installer/setup.iss`.
-
 ## Requirements
 
 - **Windows 10 or 11** (uses Win32 API, not cross-platform)
