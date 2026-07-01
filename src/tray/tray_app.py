@@ -12,7 +12,6 @@ from PIL import Image, ImageDraw
 from playwright.sync_api import sync_playwright
 
 from src.main import Engine
-from src.utils.autostart import AutostartManager
 from src.utils.config import AppConfig
 from src.utils.paths import get_app_dir
 
@@ -45,24 +44,25 @@ class TrayApp:
         self._running = False
         self._engine: Optional[Engine] = None
         self._thread: Optional[threading.Thread] = None
-        self._playwright: Optional[sync_playwright] = None
-        self._pw_instance: Optional[sync_playwright] = None
-        self._autostart = AutostartManager("AutoPassWiFi")
+
+        app_dir = get_app_dir()
 
         # In frozen mode, point Playwright to the Chromium browser bundled
         # alongside the exe by the installer.
         if getattr(sys, "frozen", False):
-            app_dir = get_app_dir()
             os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(app_dir)
 
-            # Check Chromium exists and warn if missing.
-            chrome_dir = app_dir / "chromium-1228"
-            if not chrome_dir.is_dir():
-                _show_warning(
-                    "Chromium Browser Not Found",
-                    "Chromium browser not found. Please reinstall.\n\n"
-                    f"Expected location: {chrome_dir}",
-                )
+        # Check Chromium directories exist and warn if missing.
+        chrome_dirs = [
+            app_dir / "chromium-1228",
+        ]
+        missing = [str(d) for d in chrome_dirs if not d.is_dir()]
+        if missing:
+            _show_warning(
+                "Chromium Browser Not Found",
+                "Chromium browser not found. Please reinstall.\n\n"
+                "Missing:\n" + "\n".join(missing),
+            )
 
         # Load or generate icons.
         self._icon_active = self._load_icon("icon.ico") or self._draw_default_icon(active=True)
@@ -70,16 +70,11 @@ class TrayApp:
 
         # Build pystray menu.
         self._menu = pystray.Menu(
-            pystray.MenuItem("Enable", self._on_start, enabled=lambda: not self._running),
-            pystray.MenuItem("Pause", self._on_stop, enabled=lambda: self._running),
+            pystray.MenuItem("Enable", self._on_start, enabled=lambda item: not self._running),
+            pystray.MenuItem("Pause", self._on_stop, enabled=lambda item: self._running),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", self._on_exit),
         )
-
-        # Ensure autostart is registered (installer typically does this).
-        if not self._autostart.is_registered():
-            logger.info("Registering autostart entry")
-            self._autostart.register()
 
     # ── public API ───────────────────────────────────────────────
 
@@ -108,16 +103,6 @@ class TrayApp:
     def _on_exit(self) -> None:
         """Exit — stop engine and release resources."""
         self._stop_engine()
-        if self._playwright:
-            try:
-                self._playwright.stop()
-            except Exception:
-                pass
-            if self._pw_instance:
-                try:
-                    self._pw_instance.__exit__(None, None, None)
-                except Exception:
-                    pass
         if self._icon:
             self._icon.stop()
 
@@ -128,29 +113,20 @@ class TrayApp:
         if self._running:
             return
 
-        # Ensure Playwright is started once.
-        if not self._playwright:
-            pw_instance = sync_playwright()
-            try:
-                self._playwright = pw_instance.start()
-                self._pw_instance = pw_instance  # keep for cleanup
-            except Exception:
-                pw_instance.__exit__(None, None, None)
-                raise
-
-        try:
-            engine = Engine(self._config, playwright_instance=self._playwright)
-            self._engine = engine
-        except Exception as exc:
-            logger.error("Failed to create Engine: {exc}", exc=exc)
-            return
-
         def _run_engine() -> None:
+            pw_ctx = sync_playwright()
             try:
+                pw = pw_ctx.start()
+                engine = Engine(self._config, playwright_instance=pw)
+                self._engine = engine
                 engine.run()
             except Exception as exc:
-                logger.error("Engine crashed: {exc}", exc=exc)
+                logger.error("Engine error: {exc}", exc=exc)
             finally:
+                try:
+                    pw_ctx.__exit__(None, None, None)
+                except Exception:
+                    pass
                 self._running = False
                 self._engine = None
                 self._update_icon()

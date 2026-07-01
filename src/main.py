@@ -1,7 +1,10 @@
 """Engine class — wires all components together."""
 
 import math
+import os
+import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 from loguru import logger
@@ -27,10 +30,20 @@ class Engine:
         self._playwright = playwright_instance
         self._browser = None
 
-        # Start Playwright browser (reused across all auth attempts).
+        # Resolve chromium path for frozen mode (full browser, not headless shell).
+        self._browser_path: Optional[str] = None
+        if getattr(sys, "frozen", False):
+            exe = Path(sys.executable).parent / "chromium-1228" / "chrome-win64" / "chrome.exe"
+            if exe.exists():
+                self._browser_path = str(exe)
+
+        launch_kwargs: dict = {}
+        if self._browser_path:
+            launch_kwargs["executable_path"] = self._browser_path
         self._browser = self._playwright.chromium.launch(
             headless=True,
             args=["--no-sandbox", "--disable-gpu"],
+            **launch_kwargs,
         )
 
         # Session tracker (persisted per-SSID history).
@@ -48,6 +61,8 @@ class Engine:
         profile_store = PortalProfileStore()
         clickthrough_provider = ClickthroughProvider(
             browser=self._browser,
+            playwright=self._playwright,
+            executable_path=self._browser_path,
             profile_store=profile_store,
         )
         self._registry.register(clickthrough_provider)

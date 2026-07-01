@@ -104,9 +104,13 @@ class ClickthroughProvider(AuthProvider):
     def __init__(
         self,
         browser: Browser,
+        playwright=None,
+        executable_path: Optional[str] = None,
         profile_store: Optional[PortalProfileStore] = None,
     ) -> None:
         self._browser = browser
+        self._playwright = playwright
+        self._executable_path = executable_path
         self._profile_store = profile_store
 
     # ── main entry ───────────────────────────────────────────────
@@ -214,8 +218,6 @@ class ClickthroughProvider(AuthProvider):
             for i, step in enumerate(profile.steps):
                 if step.must_interact:
                     logger.info("Captcha field at step {i} ({sel}) — switching to interactive", i=i + 1, sel=step.selector)
-                    page.close()
-                    context.close()
                     return self._interactive_login(portal_url, ssid, start_idx=i, profile=profile)
 
                 logger.debug("Replay step {i}/{n}: {type} on '{sel}'", i=i + 1, n=len(profile.steps), type=step.type, sel=step.selector)
@@ -269,10 +271,19 @@ class ClickthroughProvider(AuthProvider):
         are recorded fresh. This allows pre-filling non-captcha fields
         automatically.
         """
+        visible_browser = None
         context = None
         page = None
         try:
-            context = self._browser.new_context(
+            launch_kwargs: dict = {}
+            if self._executable_path:
+                launch_kwargs["executable_path"] = self._executable_path
+            visible_browser = self._playwright.chromium.launch(
+                headless=False,
+                args=["--no-sandbox", "--disable-gpu"],
+                **launch_kwargs,
+            )
+            context = visible_browser.new_context(
                 no_viewport=False,
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -355,6 +366,11 @@ class ClickthroughProvider(AuthProvider):
                 page.close()
             if context is not None:
                 context.close()
+            if visible_browser is not None:
+                try:
+                    visible_browser.close()
+                except Exception:
+                    pass
 
     # ── captcha detection ─────────────────────────────────────────
 
@@ -386,7 +402,7 @@ class ClickthroughProvider(AuthProvider):
             try:
                 page.goto("http://captive.apple.com", wait_until="domcontentloaded", timeout=10000)
                 body = page.content()
-                if "Success" in body or "CaptiveNetwork" in body:
+                if "Success" in body:
                     logger.info("Internet connection verified during interactive login")
                     return True
             except Exception:

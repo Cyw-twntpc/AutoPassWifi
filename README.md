@@ -5,7 +5,7 @@ A Windows system tray application that automatically detects public WiFi captive
 ## Features
 
 - **Automatic SSID monitoring** — listens for WiFi connection changes via Windows WlanAPI, no polling
-- **Captive portal detection** — probes `captive.apple.com` and detects redirects, 200/204 responses, or content-length hints
+- **Captive portal detection** — probes `captive.apple.com` and detects redirects, 204 responses, or 200 responses with non-"Success" body content (distinguishes Apple's success page from portal content)
 - **One-click authentication** — automatically submits agreement forms for known SSIDs (e.g. TPE-Free, iTaiwan)
 - **Interactive profile recording** — when an unknown SSID portal is encountered, Playwright launches a visible Chromium window for you to complete the login once; the interaction is recorded and replayed automatically next time
 - **System tray** — right-click menu to enable / pause / quit; icon changes when paused
@@ -23,7 +23,7 @@ A Windows system tray application that automatically detects public WiFi captive
 
 Go to **Settings → Apps → AutoPassWiFi** and click **Uninstall**, or run the installer again.
 
-All data files (`portal_profiles.json`, `session_history.json`, `logs/`) are removed on uninstall.
+The running application is terminated automatically before uninstall. All application files (executable, Chromium browser, data files, logs) are completely removed.
 
 ## Usage
 
@@ -53,8 +53,8 @@ All data files (`portal_profiles.json`, `session_history.json`, `logs/`) are rem
 ┌──────────────────────────────────────────────────┐
 │            PortalDetector                        │
 │   HTTP GET captive.apple.com (follow_redirects=0)│
-│   204 → no portal  200 → portal                  │
-│   302/418 → follow redirect chain → check body   │
+│   204 → no portal  200+Success → no portal       │
+│   200+other → portal  302/418 → redirect URL     │
 └──────┬───────────────────────────────────────────┘
        │
        ▼
@@ -72,7 +72,7 @@ All data files (`portal_profiles.json`, `session_history.json`, `logs/`) are rem
 | Module | Role |
 |---|---|
 | `connection_monitor.py` | ctypes wrapper around `WlanRegisterNotification` — fires callback on SSID change (connect/disconnect/roam) |
-| `portal_detector.py` | HTTP probe to `captive.apple.com`; detects portal presence via status codes and content-length |
+| `portal_detector.py` | HTTP probe to `captive.apple.com`; detects portal presence via status codes and response body content |
 | `session_tracker.py` | Tracks session state with cubic exponential backoff (90s base, 1h ceiling) to avoid hammering the network |
 | `clickthrough.py` | Playwright-based three-phase portal interaction: replay saved profile → auto-detect submit button → interactive recording |
 | `portal_profile_store.py` | JSON-persisted store mapping SSID → recorded interaction sequences |

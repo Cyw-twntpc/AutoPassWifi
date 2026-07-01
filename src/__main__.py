@@ -1,6 +1,7 @@
 """Entry point: default system tray, --debug for foreground CLI."""
 
 import argparse
+import os
 import sys
 
 import ctypes
@@ -10,13 +11,17 @@ from playwright.sync_api import sync_playwright
 from src.main import Engine
 from src.tray.tray_app import TrayApp
 from src.utils.config import AppConfig
-from src.utils.autostart import AutostartManager
 
 
 def _ensure_single_instance() -> None:
     """Exit silently if another instance is already running."""
-    ctypes.windll.kernel32.CreateMutexW(None, False, "AutoPassWiFi")
-    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _CreateMutexW = _kernel32.CreateMutexW
+    _CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    _CreateMutexW.restype = ctypes.c_void_p
+
+    _CreateMutexW(None, False, "AutoPassWiFi")
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
         sys.exit(0)
 
 
@@ -36,34 +41,18 @@ def main() -> None:
     _ensure_single_instance()
     parser = argparse.ArgumentParser(description="AutoPassWiFi — Public WiFi Auto-Authenticator")
     parser.add_argument("--debug", action="store_true", help="Run in foreground (no tray icon)")
-    parser.add_argument(
-        "--autostart",
-        choices=["register", "remove", "status"],
-        help="Manage HKCU\\...\\Run autostart entry",
-    )
 
     args = parser.parse_args()
 
     config = AppConfig.load()
     _setup_logging(config)
 
-    # Autostart management commands.
-    if args.autostart:
-        manager = AutostartManager("AutoPassWiFi")
-        if args.autostart == "register":
-            ok = manager.register()
-            print(f"Autostart {'registered' if ok else 'failed'}: {manager.exe_path}")
-        elif args.autostart == "remove":
-            ok = manager.remove()
-            print(f"Autostart {'removed' if ok else 'not found'}")
-        elif args.autostart == "status":
-            print(f"Registered: {manager.is_registered()}")
-            if manager.is_registered():
-                print(f"Path: {manager.exe_path}")
-        return
-
     # Debug mode: foreground Engine without tray.
     if args.debug:
+        if getattr(sys, "frozen", False):
+            from src.utils.paths import get_app_dir
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(get_app_dir())
+
         logger.add(sys.stderr, level=config.log.level)
         logger.info("Debug mode — running Engine in foreground")
         pw = sync_playwright()
