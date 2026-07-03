@@ -26,7 +26,13 @@ class SessionConfig:
 @dataclass
 class AppConfig:
     """Top-level application configuration."""
-    probe_url: str = "http://captive.apple.com"
+    probe_urls: list[str] = field(default_factory=lambda: [
+        "http://captive.apple.com",                                   # Apple
+        "http://www.msftconnecttest.com/connecttest.txt",             # Microsoft
+        "http://detectportal.firefox.com/success.txt",                # Firefox
+        "http://connect.rom.miui.com/generate_204",                   # Xiaomi (China fallback)
+        "http://connectivitycheck.platform.hicloud.com/generate_204", # Huawei (China fallback)
+    ])
     session: SessionConfig = field(default_factory=SessionConfig)
     log: LogConfig = field(default_factory=LogConfig)
 

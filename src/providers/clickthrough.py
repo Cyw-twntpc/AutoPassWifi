@@ -2,12 +2,17 @@
 
 import time as time_module
 from typing import Optional
+import keyring
 
 from loguru import logger
 from playwright.sync_api import Browser, Page, TimeoutError as PlaywrightTimeout
+from playwright_stealth import Stealth
 
 from src.utils.portal_profile_store import PortalProfile, PortalProfileStore, RecordedStep
 from .base import AuthProvider
+
+# Instantiate the stealth engine globally
+stealth = Stealth()
 
 # JavaScript injected into every page to record user interactions.
 _RECORDING_SCRIPT = """
@@ -107,11 +112,13 @@ class ClickthroughProvider(AuthProvider):
         playwright=None,
         executable_path: Optional[str] = None,
         profile_store: Optional[PortalProfileStore] = None,
+        probe_urls: Optional[list[str]] = None,
     ) -> None:
         self._browser = browser
         self._playwright = playwright
         self._executable_path = executable_path
         self._profile_store = profile_store
+        self._probe_urls = probe_urls or ["http://captive.apple.com", "http://www.msftconnecttest.com/connecttest.txt"]
 
     # ── main entry ───────────────────────────────────────────────
 
@@ -161,8 +168,10 @@ class ClickthroughProvider(AuthProvider):
                 ),
             )
             page = context.new_page()
+            stealth.apply_stealth_sync(page)
             page.goto(portal_url, wait_until="networkidle", timeout=30000)
 
+            self._force_scroll_to_bottom(page)
             button = self._find_button(page, self._AGREE_SELECTORS)
             if button is None:
                 return False, None
@@ -173,7 +182,7 @@ class ClickthroughProvider(AuthProvider):
             with page.expect_navigation(wait_until="networkidle", timeout=15000):
                 button.click()
 
-            if _verify_open_internet(page):
+            if _verify_open_internet(page, self._probe_urls):
                 return True, self._AGREE_SELECTORS[self._last_matched_index]
             return False, None
 
@@ -213,6 +222,7 @@ class ClickthroughProvider(AuthProvider):
                 ),
             )
             page = context.new_page()
+            stealth.apply_stealth_sync(page)
             page.goto(portal_url, wait_until="networkidle", timeout=30000)
 
             for i, step in enumerate(profile.steps):
@@ -223,12 +233,27 @@ class ClickthroughProvider(AuthProvider):
                 logger.debug("Replay step {i}/{n}: {type} on '{sel}'", i=i + 1, n=len(profile.steps), type=step.type, sel=step.selector)
                 try:
                     if step.type == "click":
+                        self._force_scroll_to_bottom(page)
                         page.locator(step.selector).first.wait_for(state="visible", timeout=10000)
-                        page.locator(step.selector).first.click()
+                        page.locator(step.selector).first.click(force=True)
                         page.wait_for_load_state("networkidle", timeout=15000)
                     elif step.type == "fill":
                         page.locator(step.selector).first.wait_for(state="visible", timeout=10000)
-                        page.locator(step.selector).first.fill(step.value)
+                        
+                        fill_value = step.value
+                        if step.is_password:
+                            try:
+                                pwd = keyring.get_password("AutoPassWiFi", f"{ssid}_{step.selector}")
+                                if pwd:
+                                    fill_value = pwd
+                                else:
+                                    logger.warning("Password not found in Credential Manager for '{sel}'", sel=step.selector)
+                                    return False
+                            except Exception as e:
+                                logger.error("Failed to retrieve password from Credential Manager: {e}", e=e)
+                                return False
+                        
+                        page.locator(step.selector).first.fill(fill_value)
                     if step.wait_after > 0:
                         time_module.sleep(step.wait_after)
                 except Exception as exc:
@@ -236,7 +261,7 @@ class ClickthroughProvider(AuthProvider):
                     return False
 
             # Verify.
-            if _verify_open_internet(page):
+            if _verify_open_internet(page, self._probe_urls):
                 logger.info("Replay successful for {ssid}", ssid=ssid)
                 return True
 
@@ -280,7 +305,7 @@ class ClickthroughProvider(AuthProvider):
                 launch_kwargs["executable_path"] = self._executable_path
             visible_browser = self._playwright.chromium.launch(
                 headless=False,
-                args=["--no-sandbox", "--disable-gpu"],
+                args=["--disable-gpu"],
                 **launch_kwargs,
             )
             context = visible_browser.new_context(
@@ -292,6 +317,7 @@ class ClickthroughProvider(AuthProvider):
                 ),
             )
             page = context.new_page()
+            stealth.apply_stealth_sync(page)
 
             # Inject recording script that survives navigation.
             page.add_init_script(_RECORDING_SCRIPT)
@@ -307,8 +333,9 @@ class ClickthroughProvider(AuthProvider):
                         continue
                     try:
                         if step.type == "click":
+                            self._force_scroll_to_bottom(page)
                             page.locator(step.selector).first.wait_for(state="visible", timeout=10000)
-                            page.locator(step.selector).first.click()
+                            page.locator(step.selector).first.click(force=True)
                             page.wait_for_load_state("networkidle", timeout=15000)
                         elif step.type == "fill":
                             page.locator(step.selector).first.wait_for(state="visible", timeout=10000)
@@ -342,6 +369,17 @@ class ClickthroughProvider(AuthProvider):
 
             # Classify captcha fields.
             fresh_steps = self._classify_steps(page, fresh_steps)
+
+            # Securely store ALL remaining non-captcha inputs
+            for step in fresh_steps:
+                if step.type == "fill" and not step.must_interact and step.value:
+                    try:
+                        keyring.set_password("AutoPassWiFi", f"{ssid}_{step.selector}", step.value)
+                        step.value = "<SECURE_CREDENTIAL>"
+                        step.is_password = True
+                        logger.info("Saved input for '{sel}' to Credential Manager", sel=step.selector)
+                    except Exception as e:
+                        logger.error("Failed to save input to Credential Manager: {e}", e=e)
 
             # Merge: profile pre-steps + fresh recorded steps.
             merged = []
@@ -396,17 +434,21 @@ class ClickthroughProvider(AuthProvider):
     # ── helpers ──────────────────────────────────────────────────
 
     def _poll_captive_status(self, page: Page, timeout: float = 300.0, interval: float = 3.0) -> bool:
-        """Poll captive.apple.com until internet is open or timeout."""
+        """Poll probe URLs until internet is open or timeout."""
         deadline = time_module.monotonic() + timeout
         while time_module.monotonic() < deadline:
-            try:
-                page.goto("http://captive.apple.com", wait_until="domcontentloaded", timeout=10000)
-                body = page.content()
-                if "Success" in body:
-                    logger.info("Internet connection verified during interactive login")
-                    return True
-            except Exception:
-                pass
+            for url in self._probe_urls:
+                try:
+                    response = page.goto(url, wait_until="domcontentloaded", timeout=10000)
+                    if response and response.status == 204:
+                        logger.info("Internet connection verified during interactive login (204 No Content)")
+                        return True
+                    body = page.content().lower()
+                    if "success" in body or "captivenetwork" in body or "microsoft connect test" in body:
+                        logger.info("Internet connection verified during interactive login")
+                        return True
+                except Exception:
+                    pass
             time_module.sleep(interval)
         return False
 
@@ -419,19 +461,52 @@ class ClickthroughProvider(AuthProvider):
                 if el.is_visible(timeout=2000):
                     logger.debug("Found button via selector: '{sel}'", sel=selector)
                     self._last_matched_index = idx
+                    # Try to remove 'disabled' attribute just in case
+                    try:
+                        el.evaluate("node => node.removeAttribute('disabled')")
+                    except Exception:
+                        pass
                     return el
             except (PlaywrightTimeout, Exception):
                 continue
         return None
 
+    def _force_scroll_to_bottom(self, page: Page):
+        """Scrolls all frames and scrollable containers to the bottom to trigger 'accept TOS' scripts."""
+        js = """
+        () => {
+            window.scrollTo(0, document.body.scrollHeight);
+            document.querySelectorAll('*').forEach(el => {
+                if (el.scrollHeight > el.clientHeight) {
+                    let style = window.getComputedStyle(el);
+                    if (style.overflowY === 'auto' || style.overflowY === 'scroll' || style.overflow === 'auto' || style.overflow === 'scroll') {
+                        el.scrollTop = el.scrollHeight;
+                        el.dispatchEvent(new Event('scroll', { bubbles: true }));
+                    }
+                }
+            });
+        }
+        """
+        for frame in page.frames:
+            try:
+                frame.evaluate(js)
+            except Exception:
+                pass
+        time_module.sleep(0.5)
+
 
 # ── module-level helpers ────────────────────────────────────────
 
-def _verify_open_internet(page: Page) -> bool:
-    """Navigate to captive.apple.com and check for success content."""
-    try:
-        page.goto("http://captive.apple.com", wait_until="domcontentloaded", timeout=15000)
-        body = page.content()
-        return "Success" in body or "CaptiveNetwork" in body
-    except Exception:
-        return False
+def _verify_open_internet(page: Page, probe_urls: list[str]) -> bool:
+    """Navigate to probe URLs and check for success content."""
+    for url in probe_urls:
+        try:
+            response = page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            if response and response.status == 204:
+                return True
+            body = page.content().lower()
+            if "success" in body or "captivenetwork" in body or "microsoft connect test" in body:
+                return True
+        except Exception:
+            continue
+    return False

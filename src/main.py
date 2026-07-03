@@ -42,7 +42,7 @@ class Engine:
             launch_kwargs["executable_path"] = self._browser_path
         self._browser = self._playwright.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-gpu"],
+            args=["--disable-gpu"],
             **launch_kwargs,
         )
 
@@ -64,13 +64,14 @@ class Engine:
             playwright=self._playwright,
             executable_path=self._browser_path,
             profile_store=profile_store,
+            probe_urls=self._config.probe_urls,
         )
         self._registry.register(clickthrough_provider)
 
         # Core modules.
         self._connection_monitor = ConnectionMonitor()
         self._authenticator = Authenticator(self._registry)
-        self._health_checker = HealthChecker(probe_url=config.probe_url)
+        self._health_checker = HealthChecker(probe_urls=config.probe_urls)
 
         # Health-check scheduling state.
         self._next_check_at: float = 0.0      # monotonic time for next probe
@@ -81,12 +82,13 @@ class Engine:
 
     # ── retry wrappers (value-based, not exception-based) ──────
 
-    def _detect_portal_with_retry(self, probe_url: str) -> Optional[str]:
+    def _detect_portal_with_retry(self, probe_urls: list[str]) -> Optional[str]:
         """Probe for captive portal, retrying up to 3 times on None."""
         for attempt in range(3):
-            result = detect_captive_portal(probe_url)
-            if result is not None:
-                return result
+            for url in probe_urls:
+                result = detect_captive_portal(url)
+                if result is not None:
+                    return result
             if attempt < 2:
                 time.sleep(1.0 * (2.0 ** attempt))
         return None
@@ -116,7 +118,7 @@ class Engine:
             logger.info("Connected to SSID: {ssid}", ssid=new_ssid)
 
             # Check if behind a captive portal and authenticate.
-            portal_url = self._detect_portal_with_retry(self._config.probe_url)
+            portal_url = self._detect_portal_with_retry(self._config.probe_urls)
             if portal_url is None:
                 return
 

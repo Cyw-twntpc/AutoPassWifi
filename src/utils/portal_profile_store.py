@@ -29,6 +29,8 @@ class RecordedStep:
     """Seconds to wait after replaying this step"""
     must_interact: bool = False
     """True = this step needs manual input every time (captcha etc)"""
+    is_password: bool = False
+    """True = this step is a password field securely stored in keyring"""
 
 
 @dataclass
@@ -96,7 +98,10 @@ class PortalProfileStore:
             with open(self._filepath, "r", encoding="utf-8") as f:
                 raw = json.load(f)
             for ssid, data in raw.items():
-                steps = [RecordedStep(**s) for s in data.get("steps", [])]
+                steps = []
+                for s in data.get("steps", []):
+                    # Handle backward compatibility if is_password is not present in old JSON
+                    steps.append(RecordedStep(**s))
                 self._profiles[ssid] = PortalProfile(
                     ssid=ssid,
                     steps=steps,

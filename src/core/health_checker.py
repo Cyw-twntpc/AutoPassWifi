@@ -12,9 +12,9 @@ class HealthChecker:
 
     def __init__(
         self,
-        probe_url: str = "http://captive.apple.com",
+        probe_urls: Optional[list[str]] = None,
     ) -> None:
-        self._probe_url = probe_url
+        self._probe_urls = probe_urls or ["http://captive.apple.com", "http://www.msftconnecttest.com/connecttest.txt"]
         self._on_portal_detected: Optional[Callable[[str], None]] = None
 
     def on_portal_detected(self, callback: Callable[[str], None]) -> None:
@@ -28,14 +28,15 @@ class HealthChecker:
         str or None
             The captive portal URL if captive, None if internet is open.
         """
-        portal_url = detect_captive_portal(self._probe_url)
+        for url in self._probe_urls:
+            portal_url = detect_captive_portal(url)
 
-        if portal_url is None:
-            return None
+            if portal_url is not None:
+                logger.warning("Captive portal detected at {url} (probed via {probe})", url=portal_url, probe=url)
 
-        logger.warning("Captive portal detected at {url}", url=portal_url)
+                if self._on_portal_detected:
+                    self._on_portal_detected(portal_url)
 
-        if self._on_portal_detected:
-            self._on_portal_detected(portal_url)
+                return portal_url
 
-        return portal_url
+        return None

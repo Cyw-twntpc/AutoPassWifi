@@ -1,7 +1,5 @@
 .venv/
-tests/
 AGENTS.md
-
 __pycache__/
 *.pyc
 *.spec
@@ -10,3 +8,6 @@ dist/
 chromium-1228/
 logs/
 .pytest_cache/
+installer/
+scripts/
+.ignore

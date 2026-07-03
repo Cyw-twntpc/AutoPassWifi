@@ -132,7 +132,7 @@ class TrayApp:
                 self._update_icon()
 
         self._running = True
-        self._thread = threading.Thread(target=_run_engine, daemon=True)
+        self._thread = threading.Thread(target=_run_engine, daemon=False)
         self._thread.start()
 
     def _stop_engine(self) -> None:
@@ -142,6 +142,10 @@ class TrayApp:
                 self._engine.stop()
             except Exception as exc:
                 logger.warning("Engine stop error: {exc}", exc=exc)
+
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=3.0)
+
         self._engine = None
         self._running = False
         self._thread = None
