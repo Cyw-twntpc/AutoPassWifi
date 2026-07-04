@@ -11,3 +11,5 @@ logs/
 installer/
 scripts/
 .ignore
+ROADMAP.md
+AutoPassWiFi_Setup_*.exe
