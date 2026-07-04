@@ -11,11 +11,8 @@
     *   **目標**：減少因驗證碼 (Captcha) 而中斷自動化，被迫轉為互動模式的情況。
     *   **實作方向**：整合輕量級的 OCR 引擎（如 Tesseract）或透過 API。當辨識到簡單圖形驗證碼時，自動截圖並進行文字辨識填寫。
 
-## 2. 跨平台與社群共享 (Cross-Platform & Community)
+## 2. 社群共享 (Community)
 
-*   **跨平台支援 (macOS / Linux)**
-    *   **目標**：打破目前僅限 Windows 系統的限制。
-    *   **實作方向**：採用抽象工廠模式 (Abstract Factory Pattern)，將底層的 `connection_monitor.py` 抽離。為 macOS 實作 `CoreWLAN` 監聽，為 Linux 實作 `NetworkManager` (`DBus`) 監聽。
 *   **社群共享設定檔 (Crowdsourced Profiles)**
     *   **目標**：實現「一人示範，萬人乘涼」，讓使用者不需要每次遇到新 Portal 都親自手動教學。
     *   **實作方向**：建立輕量雲端資料庫。使用者可匿名上傳特定 SSID 的解析腳本（過濾敏感資訊）。連上未知 SSID 時，優先從雲端拉取社群貢獻的腳本執行。

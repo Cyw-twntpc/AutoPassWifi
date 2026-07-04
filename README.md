@@ -5,7 +5,9 @@ A Windows system tray application that automatically detects public WiFi captive
 ## Features
 
 - **Automatic SSID monitoring** — listens for WiFi connection changes via Windows WlanAPI, no polling
-- **Captive portal detection** — probes `captive.apple.com` and detects redirects, 204 responses, or 200 responses with non-"Success" body content (distinguishes Apple's success page from portal content)
+- **Captive portal detection** — probes `captive.apple.com` and detects redirects, 204 responses, or 200 responses with non-"Success" body content
+- **Smart Health Checking** — intelligent state machine avoids aggressive UI flashing or polling loops during network downtime
+- **Automatic updates** — built-in updater checks GitHub Releases and prompts for updates from the tray
 - **One-click authentication** — automatically submits agreement forms for known SSIDs (e.g. TPE-Free, iTaiwan)
 - **Interactive profile recording** — when an unknown SSID portal is encountered, Playwright launches a visible Chromium window for you to complete the login once; the interaction is recorded and replayed automatically next time
 - **System tray** — right-click menu to enable / pause / quit; icon changes when paused
@@ -14,7 +16,7 @@ A Windows system tray application that automatically detects public WiFi captive
 
 ## Installation
 
-1. Download the latest installer: `AutoPassWiFi_Setup_0.1.0.exe`
+1. Download the latest installer: `AutoPassWiFi_Setup_1.0.0.exe`
 2. Run the installer — it places the executable and Chromium browser under `%LocalAppData%\AutoPassWiFi`
 3. The installer automatically adds an entry to `HKCU\...\Run` for autostart on login
 4. After installation, AutoPassWiFi appears in the system tray — right-click the WiFi icon to manage it
@@ -44,9 +46,9 @@ The running application is terminated automatically before uninstall. All applic
                │
                ▼
 ┌──────────────────────────────────────────────────┐
-│              SessionTracker                       │
-│   Cubic exponential backoff between checks        │
-│   (30s → 60s → 2m → 4m → max 1h)                │
+│              HealthChecker                        │
+│   Manages states: OPEN, PORTAL, ERROR            │
+│   Prevents aggressive polling during downtime     │
 └──────────────┬───────────────────────────────────┘
                │
                ▼
@@ -72,10 +74,12 @@ The running application is terminated automatically before uninstall. All applic
 | Module | Role |
 |---|---|
 | `connection_monitor.py` | ctypes wrapper around `WlanRegisterNotification` — fires callback on SSID change (connect/disconnect/roam) |
+| `health_checker.py` | State machine governing connectivity status (OPEN/PORTAL/ERROR) |
 | `portal_detector.py` | HTTP probe to `captive.apple.com`; detects portal presence via status codes and response body content |
-| `session_tracker.py` | Tracks session state with cubic exponential backoff (90s base, 1h ceiling) to avoid hammering the network |
+| `session_tracker.py` | Tracks session state with cubic exponential backoff to avoid hammering the network |
 | `clickthrough.py` | Playwright-based three-phase portal interaction: replay saved profile → auto-detect submit button → interactive recording |
 | `portal_profile_store.py` | JSON-persisted store mapping SSID → recorded interaction sequences |
+| `updater.py` | Auto-update mechanism polling GitHub Releases |
 | `main.py` | Engine that wires everything together: receives SSID events, invokes detection, delegates to authentication |
 
 ### Technologies
