@@ -182,7 +182,8 @@ class ClickthroughProvider(AuthProvider):
             with page.expect_navigation(wait_until="networkidle", timeout=15000):
                 button.click()
 
-            if _verify_open_internet(page, self._probe_urls):
+            probe_urls = self._health_checker._probe_urls if self._health_checker else ["http://captive.apple.com"]
+            if _verify_open_internet(page, probe_urls):
                 return True, self._AGREE_SELECTORS[self._last_matched_index]
             return False, None
 
@@ -261,7 +262,8 @@ class ClickthroughProvider(AuthProvider):
                     return False
 
             # Verify.
-            if _verify_open_internet(page, self._probe_urls):
+            probe_urls = self._health_checker._probe_urls if self._health_checker else ["http://captive.apple.com"]
+            if _verify_open_internet(page, probe_urls):
                 logger.info("Replay successful for {ssid}", ssid=ssid)
                 return True
 
