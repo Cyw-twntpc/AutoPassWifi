@@ -1,6 +1,5 @@
 """Tests for SessionTracker and get_cubic_optimized_interval."""
 
-import json
 import math
 import time
 

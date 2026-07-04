@@ -68,4 +68,3 @@ def test_corrupt_json(tmp_path):
     assert store.get_profile("Any") is None
 
 
-import pytest

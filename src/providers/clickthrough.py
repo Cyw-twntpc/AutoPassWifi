@@ -112,13 +112,13 @@ class ClickthroughProvider(AuthProvider):
         playwright=None,
         executable_path: Optional[str] = None,
         profile_store: Optional[PortalProfileStore] = None,
-        probe_urls: Optional[list[str]] = None,
+        health_checker=None,
     ) -> None:
         self._browser = browser
         self._playwright = playwright
         self._executable_path = executable_path
         self._profile_store = profile_store
-        self._probe_urls = probe_urls or ["http://captive.apple.com", "http://www.msftconnecttest.com/connecttest.txt"]
+        self._health_checker = health_checker
 
     # ── main entry ───────────────────────────────────────────────
 
@@ -347,7 +347,7 @@ class ClickthroughProvider(AuthProvider):
                 logger.info("Pre-captcha steps replayed — please fill in the verification fields")
 
             # Poll until the portal is no longer captive.
-            verified = self._poll_captive_status(page, timeout=300)
+            verified = self._poll_captive_status(timeout=300)
             if not verified:
                 logger.warning("Interactive login did not complete within timeout")
                 return False
@@ -433,22 +433,18 @@ class ClickthroughProvider(AuthProvider):
 
     # ── helpers ──────────────────────────────────────────────────
 
-    def _poll_captive_status(self, page: Page, timeout: float = 300.0, interval: float = 3.0) -> bool:
-        """Poll probe URLs until internet is open or timeout."""
+    def _poll_captive_status(self, timeout: float = 300.0, interval: float = 3.0) -> bool:
+        """Poll using the current working URL until internet is open or timeout."""
+        from src.core.portal_detector import detect_captive_portal, PortalStatus
         deadline = time_module.monotonic() + timeout
         while time_module.monotonic() < deadline:
-            for url in self._probe_urls:
-                try:
-                    response = page.goto(url, wait_until="domcontentloaded", timeout=10000)
-                    if response and response.status == 204:
-                        logger.info("Internet connection verified during interactive login (204 No Content)")
-                        return True
-                    body = page.content().lower()
-                    if "success" in body or "captivenetwork" in body or "microsoft connect test" in body:
-                        logger.info("Internet connection verified during interactive login")
-                        return True
-                except Exception:
-                    pass
+            if self._health_checker:
+                # Bypass HealthChecker.check() to avoid firing on_portal_detected spam.
+                url = self._health_checker._probe_urls[self._health_checker._working_index]
+                status, _ = detect_captive_portal(url)
+                if status == PortalStatus.OPEN:
+                    logger.info("Internet connection verified during interactive login")
+                    return True
             time_module.sleep(interval)
         return False
 

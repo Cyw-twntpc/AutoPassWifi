@@ -36,7 +36,6 @@ def test_redirect_detected(mock_httpx_redirect):
 
 def test_redirect_no_location(mock_httpx_redirect):
     """302 without Location header returns the response URL."""
-    import httpx
     from unittest.mock import PropertyMock
 
     resp = mock_httpx_redirect.return_value.__enter__.return_value.get.return_value

@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from src.providers.clickthrough import (

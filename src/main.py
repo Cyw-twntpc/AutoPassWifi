@@ -12,7 +12,7 @@ from loguru import logger
 from src.core.authenticator import Authenticator
 from src.core.connection_monitor import ConnectionMonitor
 from src.core.health_checker import HealthChecker
-from src.core.portal_detector import detect_captive_portal
+from src.core.portal_detector import detect_captive_portal, PortalStatus
 from src.providers.clickthrough import ClickthroughProvider
 from src.providers.registry import ProviderRegistry
 from src.utils.config import AppConfig
@@ -56,6 +56,10 @@ class Engine:
             cubic_k=scfg.cubic_k,
         )
 
+        # Core modules.
+        self._health_checker = HealthChecker(probe_urls=self._config.probe_urls)
+        self._connection_monitor = ConnectionMonitor()
+
         # Build provider registry.
         self._registry = ProviderRegistry()
         profile_store = PortalProfileStore()
@@ -64,14 +68,11 @@ class Engine:
             playwright=self._playwright,
             executable_path=self._browser_path,
             profile_store=profile_store,
-            probe_urls=self._config.probe_urls,
+            health_checker=self._health_checker,
         )
         self._registry.register(clickthrough_provider)
 
-        # Core modules.
-        self._connection_monitor = ConnectionMonitor()
         self._authenticator = Authenticator(self._registry)
-        self._health_checker = HealthChecker(probe_urls=config.probe_urls)
 
         # Health-check scheduling state.
         self._next_check_at: float = 0.0      # monotonic time for next probe
@@ -82,13 +83,14 @@ class Engine:
 
     # ── retry wrappers (value-based, not exception-based) ──────
 
-    def _detect_portal_with_retry(self, probe_urls: list[str]) -> Optional[str]:
-        """Probe for captive portal, retrying up to 3 times on None."""
+    def _detect_portal_with_retry(self) -> Optional[str]:
+        """Probe for captive portal, retrying up to 3 times on ERROR."""
         for attempt in range(3):
-            for url in probe_urls:
-                result = detect_captive_portal(url)
-                if result is not None:
-                    return result
+            status, result = self._health_checker.check()
+            if status == PortalStatus.PORTAL:
+                return result
+            if status == PortalStatus.OPEN:
+                return None
             if attempt < 2:
                 time.sleep(1.0 * (2.0 ** attempt))
         return None
@@ -117,8 +119,11 @@ class Engine:
 
             logger.info("Connected to SSID: {ssid}", ssid=new_ssid)
 
+            # Reset probe index so we start checking from the preferred URL.
+            self._health_checker.reset_probe_index()
+
             # Check if behind a captive portal and authenticate.
-            portal_url = self._detect_portal_with_retry(self._config.probe_urls)
+            portal_url = self._detect_portal_with_retry()
             if portal_url is None:
                 return
 
@@ -177,6 +182,14 @@ class Engine:
         if initial_ssid:
             self._on_ssid_changed(None, initial_ssid)
 
+
+        from src.utils.updater import updater
+
+        logger.info("AutoPassWiFi service started.")
+        
+        # Start auto-updater background thread
+        updater.start_background_task()
+
         logger.info("autopasswifi started")
 
         while self._running:
@@ -192,9 +205,9 @@ class Engine:
                     current_ssid is not None
                     and now >= self._next_check_at
                 ):
-                    portal_url = self._health_checker.check()
+                    status, portal_url = self._health_checker.check()
 
-                    if portal_url is None:
+                    if status == PortalStatus.OPEN:
                         # Internet is open — possibly mark as stable.
                         record = self._session_tracker.get_record(current_ssid)
                         elapsed = 0.0
@@ -204,6 +217,10 @@ class Engine:
                             self._session_tracker.mark_stable(current_ssid)
 
                         self._schedule_next_check(current_ssid)
+                    elif status == PortalStatus.ERROR:
+                        # Network error / unreachable — delay next check.
+                        logger.debug("Health check returned ERROR, delaying next check.")
+                        self._next_check_at = time.monotonic() + 15.0
             except Exception as exc:
                 logger.error("Engine loop error: {exc}", exc=exc)
                 self._next_check_at = time.monotonic() + 30.0
