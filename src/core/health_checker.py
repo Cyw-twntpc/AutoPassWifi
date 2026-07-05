@@ -36,7 +36,9 @@ class HealthChecker:
         tuple[PortalStatus, Optional[str]]
             The status and the captive portal URL if captive.
         """
+        logger.info("Running health check / Keep-Alive ping...")
         status, portal_url = concurrent_detect_captive_portal(self._probe_urls)
+        logger.info("Health check result: {status}", status=status.name)
 
         if status == PortalStatus.PORTAL and portal_url is not None:
             logger.warning("Captive portal detected at {url}", url=portal_url)

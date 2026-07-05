@@ -1,4 +1,4 @@
-# AutoPassWiFi
+# AutoPassWiFi v1.1.1
 
 A Windows system tray application that automatically detects public WiFi captive portals and completes authentication — no browser needed.
 
@@ -16,7 +16,7 @@ A Windows system tray application that automatically detects public WiFi captive
 
 ## 📦 Installation
 
-1. Download the latest installer: `AutoPassWiFi_Setup_1.1.0.exe`
+1. Download the latest installer: `AutoPassWiFi_Setup_1.1.1.exe`
 2. Run the installer — it places the executable and Chromium browser under `%LocalAppData%\AutoPassWiFi`
 3. The installer automatically adds an entry to `HKCU\...\Run` for autostart on login
 4. After installation, AutoPassWiFi appears in the system tray — right-click the WiFi icon to manage it
