@@ -1,7 +1,7 @@
 [project]
 name = "autopasswifi"
-version = "1.0.0"
-description = "Background tray application that auto-authenticates public WiFi captive portals (iTaiwan, TPE-Free, New Taipei)"
+version = "1.1.0"
+description = "Auto-login service for captive portal Wi-Fi networks"
 requires-python = ">=3.10"
 dependencies = [
     "playwright>=1.50.0",
