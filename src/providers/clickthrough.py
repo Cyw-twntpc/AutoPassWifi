@@ -126,27 +126,63 @@ class ClickthroughProvider(AuthProvider):
         """Run the three-phase authentication flow for the SSID."""
         logger.info("Authenticating {ssid} on {url}", ssid=ssid, url=portal_url)
 
-        # Phase 1: replay recorded steps if available.
-        if self._profile_store and self._profile_store.has_profile(ssid):
-            profile = self._profile_store.get_profile(ssid)
-            if profile and profile.steps:
-                logger.info("Phase 1 — replaying {n} recorded steps for {ssid}", n=len(profile.steps), ssid=ssid)
-                result = self._replay_profile(portal_url, ssid, profile)
-                if result is True:  # full replay success
-                    self._profile_store.record_replay_result(ssid, True)
-                    return True
-                logger.warning("Replay failed for {ssid}, falling back", ssid=ssid)
-                self._profile_store.record_replay_result(ssid, False)
+        from src.core.portal_detector import concurrent_detect_captive_portal, PortalStatus
 
-        # Phase 2: auto-detect with default selectors.
-        logger.info("Phase 2 — auto-detect for {ssid}", ssid=ssid)
-        success, used_selector = self._auto_detect(portal_url)
-        if success:
-            if used_selector and self._profile_store:
-                self._profile_store.save_profile(ssid, [
-                    RecordedStep(type="click", selector=used_selector, wait_after=5.0),
-                ])
-            return True
+        # Retry loop for automated phases
+        for attempt in range(3):
+            timeout_ms = 15000 + (attempt * 10000)
+            urls = self._health_checker._probe_urls if self._health_checker else ["http://captive.apple.com"]
+
+            # Double check network state before attempting login
+            status, _ = concurrent_detect_captive_portal(urls)
+            if status == PortalStatus.OPEN:
+                logger.info("Internet is already OPEN. Authentication complete.")
+                return True
+
+            # Phase 1: replay recorded steps if available.
+            if self._profile_store and self._profile_store.has_profile(ssid):
+                profile = self._profile_store.get_profile(ssid)
+                if profile and profile.steps:
+                    logger.info("Phase 1 — replaying {n} recorded steps for {ssid} (Attempt {a})", n=len(profile.steps), ssid=ssid, a=attempt + 1)
+                    result = self._replay_profile(portal_url, ssid, profile)
+                    if result is True:  # full replay success
+                        self._profile_store.record_replay_result(ssid, True)
+                        return True
+                    
+                    # Double check if internet magically opened up
+                    status, _ = concurrent_detect_captive_portal(urls)
+                    if status == PortalStatus.OPEN:
+                        logger.info("Internet became OPEN after replay failed.")
+                        return True
+                        
+                    # If it's the last attempt, we'll let it fall back.
+                    if attempt < 2:
+                        logger.warning("Replay failed, retrying...")
+                        time_module.sleep(2)
+                        continue
+
+            # Phase 2: auto-detect with default selectors.
+            logger.info("Phase 2 — auto-detect for {ssid} (Attempt {a})", ssid=ssid, a=attempt + 1)
+            success, used_selector = self._auto_detect(portal_url)
+            if success:
+                if used_selector and self._profile_store:
+                    self._profile_store.save_profile(ssid, [
+                        RecordedStep(type="click", selector=used_selector, wait_after=5.0),
+                    ])
+                return True
+                
+            # Double check before retry or fallback
+            status, _ = concurrent_detect_captive_portal(urls)
+            if status == PortalStatus.OPEN:
+                logger.info("Internet became OPEN after auto-detect failed.")
+                return True
+
+            if attempt < 2:
+                logger.warning("Auto-detect failed, retrying...")
+                time_module.sleep(2)
+                continue
+                
+            break # If we exhaust 3 attempts, break to Phase 3
 
         # Phase 3: interactive mode — open visible browser.
         logger.info("Phase 3 — interactive login for {ssid}", ssid=ssid)
@@ -169,7 +205,16 @@ class ClickthroughProvider(AuthProvider):
             )
             page = context.new_page()
             stealth.apply_stealth_sync(page)
-            page.goto(portal_url, wait_until="networkidle", timeout=30000)
+            
+            for attempt in range(3):
+                try:
+                    page.goto(portal_url, wait_until="domcontentloaded", timeout=15000 + (attempt * 10000))
+                    break
+                except PlaywrightTimeout:
+                    if attempt == 2:
+                        raise
+                    logger.debug("Auto-detect page load timeout, retrying...")
+                    time_module.sleep(1)
 
             self._force_scroll_to_bottom(page)
             button = self._find_button(page, self._AGREE_SELECTORS)
@@ -179,7 +224,7 @@ class ClickthroughProvider(AuthProvider):
             text = button.inner_text().strip() or button.get_attribute("value") or ""
             logger.info("Clicking agree button: '{text}'", text=text[:50])
 
-            with page.expect_navigation(wait_until="networkidle", timeout=15000):
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=15000):
                 button.click()
 
             probe_urls = self._health_checker._probe_urls if self._health_checker else ["http://captive.apple.com"]
@@ -224,7 +269,16 @@ class ClickthroughProvider(AuthProvider):
             )
             page = context.new_page()
             stealth.apply_stealth_sync(page)
-            page.goto(portal_url, wait_until="networkidle", timeout=30000)
+            
+            for attempt in range(3):
+                try:
+                    page.goto(portal_url, wait_until="domcontentloaded", timeout=15000 + (attempt * 10000))
+                    break
+                except PlaywrightTimeout:
+                    if attempt == 2:
+                        raise
+                    logger.debug("Replay page load timeout, retrying...")
+                    time_module.sleep(1)
 
             for i, step in enumerate(profile.steps):
                 if step.must_interact:
@@ -237,7 +291,10 @@ class ClickthroughProvider(AuthProvider):
                         self._force_scroll_to_bottom(page)
                         page.locator(step.selector).first.wait_for(state="visible", timeout=10000)
                         page.locator(step.selector).first.click(force=True)
-                        page.wait_for_load_state("networkidle", timeout=15000)
+                        try:
+                            page.wait_for_load_state("domcontentloaded", timeout=15000)
+                        except PlaywrightTimeout:
+                            pass # If navigation doesn't happen or times out, keep going
                     elif step.type == "fill":
                         page.locator(step.selector).first.wait_for(state="visible", timeout=10000)
                         
@@ -298,6 +355,13 @@ class ClickthroughProvider(AuthProvider):
         are recorded fresh. This allows pre-filling non-captcha fields
         automatically.
         """
+        from src.core.portal_detector import concurrent_detect_captive_portal, PortalStatus
+        urls = self._health_checker._probe_urls if self._health_checker else ["http://captive.apple.com"]
+        status, _ = concurrent_detect_captive_portal(urls)
+        if status == PortalStatus.OPEN:
+            logger.info("Internet is already OPEN before launching interactive browser. Aborting fallback.")
+            return True
+
         visible_browser = None
         context = None
         page = None
@@ -325,7 +389,10 @@ class ClickthroughProvider(AuthProvider):
             page.add_init_script(_RECORDING_SCRIPT)
 
             logger.info("Opening portal in visible browser — please complete the login manually")
-            page.goto(portal_url, wait_until="networkidle", timeout=30000)
+            try:
+                page.goto(portal_url, wait_until="domcontentloaded", timeout=30000)
+            except PlaywrightTimeout:
+                logger.warning("Interactive browser load timed out, continuing anyway")
 
             # Replay automated steps before the captcha breakpoint.
             if start_idx is not None and profile:
@@ -338,7 +405,10 @@ class ClickthroughProvider(AuthProvider):
                             self._force_scroll_to_bottom(page)
                             page.locator(step.selector).first.wait_for(state="visible", timeout=10000)
                             page.locator(step.selector).first.click(force=True)
-                            page.wait_for_load_state("networkidle", timeout=15000)
+                            try:
+                                page.wait_for_load_state("domcontentloaded", timeout=15000)
+                            except PlaywrightTimeout:
+                                pass
                         elif step.type == "fill":
                             page.locator(step.selector).first.wait_for(state="visible", timeout=10000)
                             page.locator(step.selector).first.fill(step.value)
@@ -349,9 +419,9 @@ class ClickthroughProvider(AuthProvider):
                 logger.info("Pre-captcha steps replayed — please fill in the verification fields")
 
             # Poll until the portal is no longer captive.
-            verified = self._poll_captive_status(timeout=300)
+            verified = self._poll_captive_status(timeout=300, page=page)
             if not verified:
-                logger.warning("Interactive login did not complete within timeout")
+                logger.warning("Interactive login did not complete within timeout or browser was closed")
                 return False
 
             # Retrieve recorded steps.
@@ -435,15 +505,19 @@ class ClickthroughProvider(AuthProvider):
 
     # ── helpers ──────────────────────────────────────────────────
 
-    def _poll_captive_status(self, timeout: float = 300.0, interval: float = 3.0) -> bool:
+    def _poll_captive_status(self, timeout: float = 300.0, interval: float = 3.0, page: Optional[Page] = None) -> bool:
         """Poll using the current working URL until internet is open or timeout."""
-        from src.core.portal_detector import detect_captive_portal, PortalStatus
+        from src.core.portal_detector import concurrent_detect_captive_portal, PortalStatus
         deadline = time_module.monotonic() + timeout
         while time_module.monotonic() < deadline:
+            if page and page.is_closed():
+                logger.info("Interactive browser closed by user.")
+                return False
+                
             if self._health_checker:
                 # Bypass HealthChecker.check() to avoid firing on_portal_detected spam.
-                url = self._health_checker._probe_urls[self._health_checker._working_index]
-                status, _ = detect_captive_portal(url)
+                urls = self._health_checker._probe_urls
+                status, _ = concurrent_detect_captive_portal(urls)
                 if status == PortalStatus.OPEN:
                     logger.info("Internet connection verified during interactive login")
                     return True
