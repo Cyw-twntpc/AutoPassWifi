@@ -1,5 +1,6 @@
 """Detect captive portal by probing a known HTTP URL."""
 
+import concurrent.futures
 import enum
 from typing import Optional
 
@@ -44,3 +45,29 @@ def detect_captive_portal(probe_url: str = "http://captive.apple.com") -> tuple[
     except httpx.RequestError:
         # Network not reachable / not connected.
         return PortalStatus.ERROR, None
+
+
+def concurrent_detect_captive_portal(probe_urls: list[str]) -> tuple[PortalStatus, Optional[str]]:
+    """Probe multiple known HTTP URLs concurrently. Returns the first definitive result.
+
+    Returns:
+        tuple[PortalStatus, Optional[str]]: The status and the portal URL if detected.
+    """
+    if not probe_urls:
+        return PortalStatus.ERROR, None
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=len(probe_urls))
+    future_to_url = {executor.submit(detect_captive_portal, url): url for url in probe_urls}
+    
+    for future in concurrent.futures.as_completed(future_to_url):
+        try:
+            status, portal_url = future.result()
+            if status in (PortalStatus.OPEN, PortalStatus.PORTAL):
+                executor.shutdown(wait=False)
+                return status, portal_url
+        except Exception:
+            pass
+            
+    # All failed
+    executor.shutdown(wait=False)
+    return PortalStatus.ERROR, None

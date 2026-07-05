@@ -2,6 +2,7 @@
 
 import math
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -106,7 +107,7 @@ class Engine:
 
     # ── callbacks ───────────────────────────────────────────────
 
-    def _on_ssid_changed(self, old_ssid: Optional[str], new_ssid: Optional[str]) -> None:
+    def _on_ssid_changed(self, old_ssid: Optional[str], new_ssid: Optional[str], secure: bool = False) -> None:
         """Called when the WiFi SSID changes."""
         try:
             # Record disconnect for the old SSID.
@@ -117,7 +118,11 @@ class Engine:
                 logger.info("WiFi disconnected")
                 return
 
-            logger.info("Connected to SSID: {ssid}", ssid=new_ssid)
+            logger.info("Connected to SSID: {ssid} (secure: {sec})", ssid=new_ssid, sec=secure)
+            
+            # DHCP Anti-Jitter: wait 3 seconds to allow DHCP to assign an IP address.
+            logger.debug("Waiting 3 seconds for DHCP assignment...")
+            time.sleep(3.0)
 
             # Reset probe index so we start checking from the preferred URL.
             self._health_checker.reset_probe_index()
@@ -125,13 +130,21 @@ class Engine:
             # Check if behind a captive portal and authenticate.
             portal_url = self._detect_portal_with_retry()
             if portal_url is None:
+                if secure:
+                    logger.info("Private network detected on {ssid}, disabling background health checks", ssid=new_ssid)
+                    self._session_tracker.mark_stable(new_ssid)
                 return
 
             # Both known and unknown SSID go through the registry.
             success = self._authenticate_with_retry(new_ssid, portal_url)
 
             if success:
+                logger.info("Authentication successful, flushing DNS cache")
+                subprocess.run(["ipconfig", "/flushdns"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 self._session_tracker.record_auth(new_ssid)
+                if secure:
+                    logger.info("Private network (with portal) authenticated on {ssid}, disabling background checks", ssid=new_ssid)
+                    self._session_tracker.mark_stable(new_ssid)
                 self._schedule_next_check(new_ssid)
         except Exception as exc:
             logger.error("_on_ssid_changed failed: {exc}", exc=exc)
@@ -145,6 +158,8 @@ class Engine:
                 self._session_tracker.record_reset(ssid)
                 success = self._authenticate_with_retry(ssid, portal_url)
                 if success:
+                    logger.info("Re-authentication successful, flushing DNS cache")
+                    subprocess.run(["ipconfig", "/flushdns"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
                     self._session_tracker.record_auth(ssid)
                     self._schedule_next_check(ssid)
                 else:
@@ -158,10 +173,16 @@ class Engine:
     def _schedule_next_check(self, ssid: str) -> None:
         """Calculate and schedule the next health check for the SSID."""
         interval = self._session_tracker.get_interval(ssid)
-        if math.isinf(interval):
-            logger.info("Health checks stopped for {ssid} (stable)", ssid=ssid)
+        secure = self._connection_monitor.current_secure
+        
+        if secure and math.isinf(interval):
+            logger.info("Health checks stopped for {ssid} (private & stable)", ssid=ssid)
             self._next_check_at = float("inf")
         else:
+            # Enforce Keep-Alive heartbeat max interval of 300s (5 minutes) for public networks
+            if not secure and (math.isinf(interval) or interval > 300):
+                interval = 300.0
+            
             self._next_check_at = time.monotonic() + interval
             logger.debug(
                 "Next health check for {ssid} in {interval:.0f}s",
@@ -177,10 +198,12 @@ class Engine:
         self._connection_monitor.start()
 
         # One-shot initial SSID to bootstrap state without waiting for an event.
-        initial_ssid = get_current_ssid()
-        self._connection_monitor.set_initial_ssid(initial_ssid)
+        initial_result = get_current_ssid()
+        initial_ssid, initial_secure = initial_result if initial_result else (None, False)
+        
+        self._connection_monitor.set_initial_ssid(initial_ssid, initial_secure)
         if initial_ssid:
-            self._on_ssid_changed(None, initial_ssid)
+            self._on_ssid_changed(None, initial_ssid, initial_secure)
 
 
         from src.utils.updater import updater
@@ -208,13 +231,17 @@ class Engine:
                     status, portal_url = self._health_checker.check()
 
                     if status == PortalStatus.OPEN:
-                        # Internet is open — possibly mark as stable.
-                        record = self._session_tracker.get_record(current_ssid)
-                        elapsed = 0.0
-                        if record.last_auth_at is not None:
-                            elapsed = time.time() - record.last_auth_at
-                        if elapsed >= self._session_tracker.stable_threshold and not record.stable:
-                            self._session_tracker.mark_stable(current_ssid)
+                        # Internet is open.
+                        # For secure networks, we mark as stable to stop checks.
+                        # For public networks, we don't mark stable to maintain the 5-min heartbeat.
+                        secure = self._connection_monitor.current_secure
+                        if secure:
+                            record = self._session_tracker.get_record(current_ssid)
+                            elapsed = 0.0
+                            if record.last_auth_at is not None:
+                                elapsed = time.time() - record.last_auth_at
+                            if elapsed >= self._session_tracker.stable_threshold and not record.stable:
+                                self._session_tracker.mark_stable(current_ssid)
 
                         self._schedule_next_check(current_ssid)
                     elif status == PortalStatus.ERROR:

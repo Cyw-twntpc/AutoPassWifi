@@ -4,7 +4,7 @@ from typing import Callable, Optional
 
 from loguru import logger
 
-from .portal_detector import detect_captive_portal, PortalStatus
+from .portal_detector import concurrent_detect_captive_portal, PortalStatus
 
 
 class HealthChecker:
@@ -14,13 +14,16 @@ class HealthChecker:
         self,
         probe_urls: Optional[list[str]] = None,
     ) -> None:
-        self._probe_urls = probe_urls or ["http://captive.apple.com", "http://www.msftconnecttest.com/connecttest.txt"]
+        self._probe_urls = probe_urls or [
+            "http://captive.apple.com", 
+            "http://www.msftconnecttest.com/connecttest.txt",
+            "http://gstatic.com/generate_204"
+        ]
         self._on_portal_detected: Optional[Callable[[str], None]] = None
-        self._working_index = 0
 
     def reset_probe_index(self) -> None:
-        """Reset the probe index to start from the primary URL."""
-        self._working_index = 0
+        """Reset the probe index (legacy, kept for compatibility)."""
+        pass
 
     def on_portal_detected(self, callback: Callable[[str], None]) -> None:
         self._on_portal_detected = callback
@@ -33,21 +36,14 @@ class HealthChecker:
         tuple[PortalStatus, Optional[str]]
             The status and the captive portal URL if captive.
         """
-        for i in range(self._working_index, len(self._probe_urls)):
-            url = self._probe_urls[i]
-            status, portal_url = detect_captive_portal(url)
+        status, portal_url = concurrent_detect_captive_portal(self._probe_urls)
 
-            if status in (PortalStatus.OPEN, PortalStatus.PORTAL):
-                self._working_index = i
+        if status == PortalStatus.PORTAL and portal_url is not None:
+            logger.warning("Captive portal detected at {url}", url=portal_url)
+            if self._on_portal_detected:
+                self._on_portal_detected(portal_url)
 
-                if status == PortalStatus.PORTAL and portal_url is not None:
-                    logger.warning("Captive portal detected at {url} (probed via {probe})", url=portal_url, probe=url)
+        if status == PortalStatus.ERROR:
+            logger.debug("All concurrent probes resulted in ERROR")
 
-                    if self._on_portal_detected:
-                        self._on_portal_detected(portal_url)
-
-                return status, portal_url
-            
-            logger.debug("Probe {url} resulted in ERROR, trying next if available", url=url)
-
-        return PortalStatus.ERROR, None
+        return status, portal_url

@@ -96,12 +96,22 @@ class WLAN_ASSOCIATION_ATTRIBUTES(Structure):
     ]
 
 
+class WLAN_SECURITY_ATTRIBUTES(Structure):
+    _fields_ = [
+        ("bSecurityEnabled", wintypes.BOOL),
+        ("bOneXEnabled", wintypes.BOOL),
+        ("dot11AuthAlgorithm", wintypes.DWORD),
+        ("dot11CipherAlgorithm", wintypes.DWORD),
+    ]
+
+
 class WLAN_CONNECTION_ATTRIBUTES(Structure):
     _fields_ = [
         ("isState", wintypes.DWORD),
         ("wlanConnectionMode", wintypes.DWORD),
         ("strProfileName", wintypes.WCHAR * 256),
         ("wlanAssociationAttributes", WLAN_ASSOCIATION_ATTRIBUTES),
+        ("wlanSecurityAttributes", WLAN_SECURITY_ATTRIBUTES),
     ]
 
 
@@ -171,11 +181,10 @@ _WlanFreeMemory.argtypes = [
 _WlanFreeMemory.restype = wintypes.DWORD
 
 
-def query_current_ssid() -> Optional[str]:
-    """Query the SSID of the currently connected WiFi interface via WlanAPI.
+def query_current_ssid() -> Optional[tuple[str, bool]]:
+    """Query the SSID and security status of the currently connected WiFi interface.
 
-    Locale-independent replacement for netsh-based SSID queries.
-    Returns None if not connected or on error.
+    Returns (ssid, secure) or None if not connected or on error.
     """
     version = wintypes.DWORD()
     handle = wintypes.LPVOID()
@@ -223,7 +232,8 @@ def query_current_ssid() -> Optional[str]:
                         ssid_bytes = bytes(
                             conn_attrs.wlanAssociationAttributes.dot11Ssid.ucSSID[:ssid_len]
                         )
-                        return ssid_bytes.decode("utf-8", errors="replace")
+                        secure = bool(conn_attrs.wlanSecurityAttributes.bSecurityEnabled)
+                        return (ssid_bytes.decode("utf-8", errors="replace"), secure)
                 finally:
                     _WlanFreeMemory(buf_ptr)
     finally:
@@ -245,7 +255,8 @@ class ConnectionMonitor:
         self._running = threading.Event()
         self._queue: queue.Queue = queue.Queue()
         self._current_ssid: Optional[str] = None
-        self._on_ssid_changed: Optional[Callable[[Optional[str], Optional[str]], None]] = None
+        self._current_secure: bool = False
+        self._on_ssid_changed: Optional[Callable[[Optional[str], Optional[str], bool], None]] = None
 
     # ── public API ───────────────────────────────────────────────
 
@@ -310,18 +321,19 @@ class ConnectionMonitor:
     def current_ssid(self) -> Optional[str]:
         return self._current_ssid
 
-    def set_initial_ssid(self, ssid: Optional[str]) -> None:
-        """Set the initial SSID without triggering callbacks.
+    @property
+    def current_secure(self) -> bool:
+        return self._current_secure
 
-        Called once after start() to bootstrap state so that subsequent
-        events from the queue do not re-trigger.
-        """
+    def set_initial_ssid(self, ssid: Optional[str], secure: bool = False) -> None:
+        """Set the initial SSID without triggering callbacks."""
         self._current_ssid = ssid
+        self._current_secure = secure
 
-    def on_ssid_changed(self, callback: Callable[[Optional[str], Optional[str]], None]) -> None:
+    def on_ssid_changed(self, callback: Callable[[Optional[str], Optional[str], bool], None]) -> None:
         """Register a callback invoked when the SSID changes.
 
-        The callback receives (old_ssid, new_ssid).
+        The callback receives (old_ssid, new_ssid, secure).
         """
         self._on_ssid_changed = callback
 
@@ -342,25 +354,29 @@ class ConnectionMonitor:
 
         if event_type == "connected":
             new_ssid = event.get("ssid")
+            secure = event.get("secure", False)
             old_ssid = self._current_ssid
             if new_ssid != old_ssid:
                 self._current_ssid = new_ssid
+                self._current_secure = secure
                 logger.info(
-                    "SSID changed: {old} -> {new}",
+                    "SSID changed: {old} -> {new} (secure: {sec})",
                     old=old_ssid or "(none)",
                     new=new_ssid or "(none)",
+                    sec=secure,
                 )
                 if self._on_ssid_changed:
-                    self._on_ssid_changed(old_ssid, new_ssid)
+                    self._on_ssid_changed(old_ssid, new_ssid, secure)
                 return new_ssid
 
         elif event_type == "disconnected":
             old_ssid = self._current_ssid
             if old_ssid is not None:
                 self._current_ssid = None
+                self._current_secure = False
                 logger.info("WiFi disconnected (was: {ssid})", ssid=old_ssid)
                 if self._on_ssid_changed:
-                    self._on_ssid_changed(old_ssid, None)
+                    self._on_ssid_changed(old_ssid, None, False)
             return None
 
         return None
@@ -396,4 +412,5 @@ class ConnectionMonitor:
         ssid = ssid_bytes.decode("utf-8", errors="replace")
 
         if ssid:
-            self._queue.put({"type": "connected", "ssid": ssid})
+            secure = bool(conn_data.bSecurityEnabled)
+            self._queue.put({"type": "connected", "ssid": ssid, "secure": secure})
