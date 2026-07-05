@@ -73,7 +73,7 @@ class TrayApp:
             pystray.MenuItem("Enable", self._on_start, enabled=lambda item: not self._running),
             pystray.MenuItem("Pause", self._on_stop, enabled=lambda item: self._running),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("強制觸發偵測", self._on_force_check),
+            pystray.MenuItem("Force Trigger Detection", self._on_force_check),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", self._on_exit),
         )
