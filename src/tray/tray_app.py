@@ -73,7 +73,7 @@ class TrayApp:
             pystray.MenuItem("Enable", self._on_start, enabled=lambda item: not self._running),
             pystray.MenuItem("Pause", self._on_stop, enabled=lambda item: self._running),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Check for Updates", self._on_update),
+            pystray.MenuItem("強制觸發偵測", self._on_force_check),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", self._on_exit),
         )
@@ -102,11 +102,10 @@ class TrayApp:
             self._stop_engine()
             self._update_icon()
 
-    def _on_update(self) -> None:
-        """Trigger an immediate update check in the background."""
-        from src.utils.updater import updater
-        # Start a quick thread so it doesn't block the UI
-        threading.Thread(target=updater.check_and_install_update, daemon=True).start()
+    def _on_force_check(self) -> None:
+        """Trigger an immediate portal detection."""
+        if self._engine:
+            self._engine.force_check()
 
     def _on_exit(self) -> None:
         """Exit — stop engine and release resources."""

@@ -265,3 +265,7 @@ class Engine:
                 self._browser.close()
             except Exception:
                 pass
+
+    def force_check(self) -> None:
+        """Force an immediate health check."""
+        self._next_check_at = 0.0
